@@ -458,42 +458,109 @@ def verify_update_success():
         
         # Đọc nhật ký cập nhật nếu có
         update_logs = []
+        update_folders = []
         temp_dir = tempfile.gettempdir()
+        
+        print("Kiểm tra các thư mục và nhật ký cập nhật...")
+        
+        # Tìm tất cả thư mục cập nhật
         for item in os.listdir(temp_dir):
             if item.startswith("AutoOffice_Update_") and os.path.isdir(os.path.join(temp_dir, item)):
-                log_file = os.path.join(temp_dir, item, "update_log.txt")
-                if os.path.exists(log_file):
-                    try:
-                        with open(log_file, "r", encoding="ascii", errors="replace") as f:
-                            update_logs.append(f.read())
-                    except:
-                        pass
+                update_folder = os.path.join(temp_dir, item)
+                update_folders.append(update_folder)
+                
+                # Tìm tất cả tệp nhật ký trong thư mục
+                for log_file in ["update_log.txt", "update_completed.txt"]:
+                    full_path = os.path.join(update_folder, log_file)
+                    if os.path.exists(full_path):
+                        try:
+                            with open(full_path, "r", encoding="ascii", errors="replace") as f:
+                                content = f.read()
+                                update_logs.append(f"[{log_file} in {item}]\n{content}")
+                        except Exception as e:
+                            print(f"Lỗi khi đọc {full_path}: {e}")
+                
+                # Kiểm tra các tệp cập nhật đã tải xuống
+                for py_file in ['main.py', 'gui.py', 'word_processor.py']:
+                    full_path = os.path.join(update_folder, py_file)
+                    if os.path.exists(full_path):
+                        try:
+                            file_size = os.path.getsize(full_path)
+                            print(f"Tìm thấy tệp cập nhật {py_file}: {file_size} bytes")
+                        except:
+                            print(f"Không thể đọc kích thước tệp {py_file}")
+                
+                # Kiểm tra tệp batch
+                batch_file = os.path.join(update_folder, "runasadmin.bat")
+                if os.path.exists(batch_file):
+                    print(f"Tìm thấy tệp batch trong {item}")
         
         if update_logs:
-            print("Đọc được nhật ký cập nhật:")
+            print(f"Đọc được {len(update_logs)} nhật ký cập nhật từ {len(update_folders)} thư mục")
             for idx, log in enumerate(update_logs):
                 print(f"--- Nhật ký {idx+1} ---")
                 print(log[:500] + "..." if len(log) > 500 else log)  # Chỉ hiển thị 500 ký tự đầu tiên
+        else:
+            print("Không tìm thấy nhật ký cập nhật nào")
                 
         # Kiểm tra các tệp Python cần thiết
         required_files = ["main.py", "gui.py", "word_processor.py"]
         missing_files = []
+        file_details = []
         
         for file in required_files:
             file_path = os.path.join(exe_dir, file)
             if not os.path.exists(file_path):
                 missing_files.append(file)
+                file_details.append(f"{file}: Không tồn tại")
             elif os.path.getsize(file_path) == 0:
                 missing_files.append(f"{file} (empty)")
+                file_details.append(f"{file}: Tệp rỗng")
+            else:
+                file_size = os.path.getsize(file_path)
+                file_details.append(f"{file}: {file_size} bytes")
+                
+                # Kiểm tra nội dung tệp
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                        content = f.read(200)  # Đọc 200 ký tự đầu tiên
+                        file_details.append(f"  - Nội dung bắt đầu: {content[:50]}...")
+                except Exception as e:
+                    file_details.append(f"  - Lỗi khi đọc nội dung: {e}")
+        
+        # Hiển thị thông tin chi tiết về các tệp
+        print("\nThông tin chi tiết về các tệp Python:")
+        for detail in file_details:
+            print(detail)
         
         if missing_files:
-            print(f"CẢNH BÁO: Thiếu hoặc lỗi các tệp sau khi cập nhật: {missing_files}")
+            print(f"\nCẢNH BÁO: Thiếu hoặc lỗi các tệp sau khi cập nhật: {missing_files}")
+            
+            # Thử copy lại từ thư mục tạm thời nếu có
+            if update_folders:
+                print("\nĐang thử sao chép lại từ thư mục tạm thời...")
+                for missing_file in missing_files:
+                    file_name = missing_file.split(" ")[0]  # Loại bỏ phần "(empty)" nếu có
+                    for folder in update_folders:
+                        src_path = os.path.join(folder, file_name)
+                        if os.path.exists(src_path) and os.path.getsize(src_path) > 0:
+                            dst_path = os.path.join(exe_dir, file_name)
+                            try:
+                                # Thử sao chép tệp
+                                import shutil
+                                shutil.copy2(src_path, dst_path)
+                                print(f"Đã sao chép lại {file_name} từ {folder}")
+                            except Exception as e:
+                                print(f"Không thể sao chép {file_name}: {e}")
+            
             return False
         
-        print("Xác minh cập nhật thành công: Tất cả các tệp đều tồn tại và không rỗng")
+        print("\nXác minh cập nhật thành công: Tất cả các tệp đều tồn tại và không rỗng")
         return True
     except Exception as e:
         print(f"Lỗi khi xác minh cập nhật: {e}")
+        import traceback
+        print(traceback.format_exc())
         return False
 
 # Tạo GUI ứng dụng

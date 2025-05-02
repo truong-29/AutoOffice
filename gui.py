@@ -36,7 +36,7 @@ class WordCleanerApp:
         self.analysis_results = []
         
         # Định nghĩa phiên bản hiện tại
-        self.current_version = "1.0.0"
+        self.current_version = "1.0.1"
         self.github_repo = "truong-29/AutoOffice"
         
         # Tạo file version.json nếu chạy từ thư mục có exe
@@ -476,6 +476,21 @@ class WordCleanerApp:
                                 with open(temp_file_path, 'wb') as f:
                                     f.write(response.content)
                                 self.word_processor.log(f"Downloaded file {file}")
+                                
+                                # Kiểm tra nội dung file đã tải
+                                with open(temp_file_path, 'r', encoding='utf-8', errors='replace') as f:
+                                    content = f.read()
+                                    if len(content) < 100:  # Kiểm tra nếu file quá ngắn
+                                        raise Exception(f"File content too short ({len(content)} bytes)")
+                                    
+                                    # Kiểm tra tính hợp lệ của file Python
+                                    if file.endswith('.py'):
+                                        try:
+                                            import ast
+                                            ast.parse(content)
+                                        except SyntaxError as se:
+                                            raise Exception(f"Invalid Python syntax: {se}")
+                                
                                 # Kiểm tra file đã tải
                                 if os.path.exists(temp_file_path) and os.path.getsize(temp_file_path) > 0:
                                     downloaded_files.append(file)
@@ -517,7 +532,46 @@ class WordCleanerApp:
                     # Hẹn giờ đóng ứng dụng và cập nhật
                     self.word_processor.log("User confirmed update, preparing to close application...")
                     
-                    # ----NEW: Sửa đổi updater script để đảm bảo sao chép file thành công----
+                    # ----NEW: Sử dụng 2 cách để cập nhật: Python Script và Batch File----
+                    
+                    # Tạo batch file để chạy với quyền admin
+                    batch_file_path = os.path.join(temp_dir, "runasadmin.bat")
+                    batch_content = f"""@echo off
+REM Run-as-admin batch file for updating
+echo Starting update process with admin rights...
+
+REM Wait for application to close
+timeout /t 5 /nobreak >nul
+
+REM Copy files with admin rights
+echo Copying files with admin privileges...
+
+for %%f in (main.py gui.py word_processor.py version.json) do (
+  echo Copying %%f...
+  copy /Y "{temp_dir.replace('\\', '\\\\')}\\%%f" "{exe_dir.replace('\\', '\\\\')}\\%%f"
+  if errorlevel 1 (
+    echo ERROR: Failed to copy %%f
+  ) else (
+    echo Successfully copied %%f
+  )
+)
+
+REM Remove update marker
+del "{marker_path.replace('\\', '\\\\')}"
+
+REM Start application with updated flag
+echo Starting application...
+start "" "{exe_path.replace('\\', '\\\\')}" --updated
+
+echo Update process completed.
+REM Cleanup
+REM self-delete after execution
+(goto) 2>nul & del "%~f0"
+"""
+                    with open(batch_file_path, 'w', encoding='ascii') as f:
+                        f.write(batch_content)
+                    self.word_processor.log(f"Created runasadmin.bat at {batch_file_path}")
+                    
                     # Tạo Python updater script
                     updater_script_path = os.path.join(temp_dir, "updater.py")
                     
@@ -545,6 +599,7 @@ exe_dir = "{exe_dir.replace('\\', '\\\\')}"
 temp_dir = "{temp_dir.replace('\\', '\\\\')}"
 exe_path = "{exe_path.replace('\\', '\\\\')}"
 marker_path = os.path.join(exe_dir, "updating.marker")
+batch_path = os.path.join(temp_dir, "runasadmin.bat")
 
 files_to_copy = {files_to_download}
 successful = True
@@ -552,26 +607,36 @@ successful = True
 try:
     # Kiểm tra nếu folder đích có quyền ghi
     test_file = os.path.join(exe_dir, "test_write_permission.tmp")
+    has_write_permission = False
     try:
         with open(test_file, 'w') as f:
             f.write("test")
         os.remove(test_file)
         log(f"Destination folder has write permission: {{exe_dir}}")
+        has_write_permission = True
     except Exception as e:
         log(f"ERROR: No write permission to destination folder: {{e}}")
-        log(f"Trying to run updater with admin privileges...")
+        log(f"Will attempt to use admin privileges...")
         
-        # Thử chạy với quyền admin
-        if sys.platform.startswith('win'):
+        # Thử sử dụng batch file để chạy với quyền admin
+        if os.path.exists(batch_path):
             try:
+                log("Attempting to run batch file with admin privileges...")
                 import ctypes
-                if not ctypes.windll.shell32.IsUserAnAdmin():
-                    log("Re-launching updater as Administrator")
-                    # Re-run python script with admin rights
-                    ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, __file__, None, 1)
+                if ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", f"/c {{batch_path}}", None, 1) > 32:
+                    log("Successfully launched batch file with admin privileges")
+                    # Exit the current script since batch file will take over
                     sys.exit(0)
+                else:
+                    log("Failed to launch batch file with admin privileges")
             except Exception as e:
-                log(f"Failed to elevate privileges: {{e}}")
+                log(f"Error trying to run batch file: {{e}}")
+        else:
+            log(f"ERROR: Batch file not found at {{batch_path}}")
+    
+    # Nếu không thể sử dụng batch file, tiếp tục với quyền thông thường
+    if not has_write_permission:
+        log("WARNING: Continuing without admin privileges, copy may fail")
     
     # Copy files - ENHANCED ERROR HANDLING
     for file in files_to_copy:
@@ -601,29 +666,75 @@ try:
             # First try direct copy
             try:
                 shutil.copy2(src_path, dst_path)
-                log(f"Successfully copied {{file}}")
+                log(f"Successfully copied {{file}} using direct copy")
             except Exception as e:
                 log(f"Direct copy failed: {{e}}")
-                log("Trying to create intermediate file...")
+                log("Trying alternative copy method...")
                 
                 # Try with intermediate file
                 temp_dst = dst_path + ".new"
                 try:
-                    shutil.copy2(src_path, temp_dst)
+                    with open(src_path, 'rb') as src_file:
+                        content = src_file.read()
+                    
+                    with open(temp_dst, 'wb') as dst_file:
+                        dst_file.write(content)
+                        
                     if os.path.exists(dst_path):
-                        os.remove(dst_path)
+                        os.unlink(dst_path)
                     os.rename(temp_dst, dst_path)
-                    log(f"Successfully copied {{file}} using intermediate file")
+                    log(f"Successfully copied {{file}} using read/write method")
                 except Exception as e2:
-                    log(f"ERROR: All copy methods failed for {{file}}: {{e2}}")
-                    successful = False
+                    log(f"Alternative copy method failed: {{e2}}")
+                    
+                    # Last resort - try system copy command
+                    try:
+                        if sys.platform.startswith('win'):
+                            cmd = f'copy /Y "{{src_path}}" "{{dst_path}}"'
+                            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                            if result.returncode == 0:
+                                log(f"Successfully copied {{file}} using system copy command")
+                            else:
+                                log(f"System copy command failed: {{result.stderr}}")
+                                successful = False
+                        else:
+                            # Unix system
+                            cmd = f'cp "{{src_path}}" "{{dst_path}}"'
+                            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                            if result.returncode == 0:
+                                log(f"Successfully copied {{file}} using system cp command")
+                            else:
+                                log(f"System cp command failed: {{result.stderr}}")
+                                successful = False
+                    except Exception as e3:
+                        log(f"ERROR: All copy methods failed for {{file}}: {{e3}}")
+                        successful = False
             
             # Verify file was copied
-            if not os.path.exists(dst_path) or os.path.getsize(dst_path) == 0:
-                log(f"ERROR: Verification failed, destination file missing or empty: {{dst_path}}")
-                successful = False
+            if os.path.exists(dst_path):
+                file_size = os.path.getsize(dst_path)
+                if file_size > 0:
+                    log(f"Verified file was copied successfully: {{dst_path}} ({{file_size}} bytes)")
+                    # Verify file contents match
+                    try:
+                        with open(src_path, 'rb') as src_file:
+                            src_content = src_file.read()
+                        with open(dst_path, 'rb') as dst_file:
+                            dst_content = dst_file.read()
+                        
+                        if src_content == dst_content:
+                            log(f"File contents verified identical")
+                        else:
+                            log(f"WARNING: File contents do not match! Source size: {{len(src_content)}}, Dest size: {{len(dst_content)}}")
+                            successful = False
+                    except Exception as e:
+                        log(f"Error verifying file contents: {{e}}")
+                else:
+                    log(f"ERROR: Destination file is empty: {{dst_path}}")
+                    successful = False
             else:
-                log(f"Verified file was copied successfully: {{dst_path}}")
+                log(f"ERROR: Destination file missing: {{dst_path}}")
+                successful = False
                 
         except Exception as e:
             log(f"ERROR: Unexpected error copying {{file}}: {{e}}")
@@ -678,16 +789,41 @@ except Exception as e:
 # Cleanup temp directory after delay
 time.sleep(5)
 try:
-    shutil.rmtree(temp_dir)
-    print("Removed temp directory")
+    # Don't delete the temp directory yet to allow troubleshooting
+    # Just create a marker file to indicate completion
+    with open(os.path.join(temp_dir, "update_completed.txt"), "w") as f:
+        f.write(f"Update process completed at {{time.strftime('%Y-%m-%d %H:%M:%S')}}")
+    log("Created completion marker, keeping temp directory for troubleshooting")
 except Exception as e:
-    print(f"Could not remove temp directory: {{e}}")
+    log(f"Error creating completion marker: {{e}}")
 """
 
                     # Lưu script cập nhật
                     with open(updater_script_path, 'w', encoding='utf-8') as f:
                         f.write(updater_script)
                     self.word_processor.log(f"Created updater script at {updater_script_path}")
+                    
+                    # Thử một lần sao chép trực tiếp trước khi đóng ứng dụng
+                    self.word_processor.log("Attempting direct file copy before closing application...")
+                    direct_copy_success = True
+                    
+                    for file in files_to_download:
+                        if file == 'version.json':
+                            continue  # Bỏ qua vì đã có version.txt
+                            
+                        src_path = os.path.join(temp_dir, file)
+                        dst_path = os.path.join(exe_dir, file)
+                        try:
+                            if os.path.exists(dst_path):
+                                os.chmod(dst_path, 0o666)  # Thử làm cho file có thể ghi
+                            shutil.copy2(src_path, dst_path)
+                            self.word_processor.log(f"Successfully pre-copied {file}")
+                        except Exception as e:
+                            self.word_processor.log(f"Pre-copy of {file} failed: {e}")
+                            direct_copy_success = False
+                    
+                    if direct_copy_success:
+                        self.word_processor.log("Direct copy successful, marking update as complete")
                     
                     # Hàm đóng ứng dụng và chạy updater script
                     def close_and_update():
