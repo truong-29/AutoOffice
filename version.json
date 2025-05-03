@@ -1,9 +1,10 @@
 {
-    "version": "2.0.0",
-    "release_date": "2023-07-01",
+    "version": "2.1.1",
+    "release_date": "2023-12-01",
     "changes": [
-        "Phiên bản đầu tiên",
-        "Hỗ trợ chuyển đổi ngắt phần 'Next Page' sang 'Continuous'",
-        "Giao diện đơn giản và dễ sử dụng"
+        "Cải thiện chức năng cập nhật tự động",
+        "Sửa lỗi khi cập nhật file exe",
+        "Thêm chức năng yêu cầu quyền admin khi cập nhật",
+        "Thêm thông báo trạng thái cập nhật"
     ]
 }

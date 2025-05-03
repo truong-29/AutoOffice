@@ -58,37 +58,64 @@ class AutoOfficeUpdater:
         try:
             logger.info("Đang kiểm tra cập nhật...")
             
-            response = requests.get(self.api_url)
+            # Thiết lập timeout cho requests
+            timeout_seconds = 10
+            
+            # Sử dụng session để tái sử dụng kết nối
+            session = requests.Session()
+            session.headers.update({'User-Agent': 'AutoOffice-UpdateChecker'})
+            
+            try:
+                response = session.get(self.api_url, timeout=timeout_seconds)
+            except requests.exceptions.Timeout:
+                logger.error(f"Timeout khi kết nối đến GitHub API sau {timeout_seconds} giây")
+                return False, None, []
+            except requests.exceptions.ConnectionError:
+                logger.error("Lỗi kết nối đến GitHub API. Vui lòng kiểm tra kết nối internet.")
+                return False, None, []
             
             if response.status_code != 200:
                 logger.error(f"Lỗi khi kiểm tra cập nhật: HTTP {response.status_code}")
-                return False, None
+                logger.error(f"Nội dung phản hồi: {response.text[:200]}")
+                return False, None, []
             
             # Lấy nội dung file version.json từ GitHub
             content_data = response.json()
             if "content" not in content_data:
                 logger.error("Không tìm thấy trường 'content' trong phản hồi API")
-                return False, None
+                logger.error(f"Dữ liệu nhận được: {str(content_data)[:200]}")
+                return False, None, []
                 
             import base64
-            content = base64.b64decode(content_data["content"]).decode("utf-8")
-            remote_version_data = json.loads(content)
+            try:
+                content = base64.b64decode(content_data["content"]).decode("utf-8")
+                remote_version_data = json.loads(content)
+            except Exception as e:
+                logger.error(f"Lỗi khi giải mã nội dung version.json: {e}")
+                return False, None, []
             
             remote_version = remote_version_data.get("version", "1.0.0")
+            logger.info(f"Phiên bản hiện tại: {self.current_version}, Phiên bản mới: {remote_version}")
             
             # So sánh phiên bản
             has_update = self._compare_versions(self.current_version, remote_version)
             
             if has_update:
+                # Hiển thị thêm thông tin về bản cập nhật
+                changes = remote_version_data.get("changes", [])
+                changes_str = "\n".join([f"- {change}" for change in changes])
                 logger.info(f"Có phiên bản mới: {remote_version}")
-                return True, remote_version
+                logger.info(f"Các thay đổi:\n{changes_str}")
+                return True, remote_version, changes
             else:
                 logger.info("Không có cập nhật mới")
-                return False, remote_version
+                return False, remote_version, []
                 
         except Exception as e:
             logger.error(f"Lỗi khi kiểm tra cập nhật: {e}")
-            return False, None
+            import traceback
+            logger.error(traceback.format_exc())
+            return False, None, []
     
     def _compare_versions(self, current, remote):
         """So sánh phiên bản hiện tại với phiên bản mới từ server."""
@@ -247,39 +274,74 @@ class AutoOfficeUpdater:
             
             # Ghi file batch
             with open(build_script, 'w') as f:
-                f.write(f"cd {self.app_path}\n")
+                f.write(f"cd /d {self.app_path}\n")
                 f.write(pyinstaller_cmd)
             
             # Chạy file batch
             logger.info("Đang chạy lệnh build exe...")
-            subprocess.call(build_script, shell=True)
+            build_result = subprocess.call(build_script, shell=True)
             
+            if build_result != 0:
+                logger.error(f"Lỗi khi build exe: Mã lỗi {build_result}")
+                return False
+                
             # Đường dẫn của file exe mới
             new_exe_path = os.path.join(self.app_path, "dist", "AutoOffice.exe")
             
             # Kiểm tra xem file exe mới đã được tạo chưa
             if os.path.exists(new_exe_path):
+                logger.info(f"Đã tạo thành công file exe mới: {new_exe_path}")
+                
+                # Tạo file batch để khởi động lại ứng dụng sau khi cập nhật
+                restart_script = os.path.join(temp_dir, "restart_app.bat")
+                with open(restart_script, 'w') as f:
+                    f.write("@echo off\n")
+                    f.write("echo Khoi dong lai ung dung sau khi cap nhat...\n")
+                    f.write(f'timeout /t 2 /nobreak > nul\n')
+                    f.write(f'start "" "{self.exe_path}"\n')
+                    f.write("exit\n")
+                
                 # Tạo file batch để thay thế file exe cũ
                 replace_script = os.path.join(temp_dir, "replace_exe.bat")
                 
                 with open(replace_script, 'w') as f:
                     f.write("@echo off\n")
-                    f.write("timeout /t 2 /nobreak > nul\n")  # Đợi 2 giây
-                    f.write(f'copy /Y "{new_exe_path}" "{self.exe_path}"\n')
-                    f.write(f'start "" "{self.exe_path}"\n')
-                    f.write(f'rmdir /S /Q "{temp_dir}"\n')
-                    f.write(f'rmdir /S /Q "{os.path.join(self.app_path, "build")}"\n')
-                    f.write(f'rmdir /S /Q "{os.path.join(self.app_path, "dist")}"\n')
+                    f.write("echo Dang thay the file exe cu...\n")
+                    # Đợi lâu hơn để đảm bảo ứng dụng cũ đã đóng hoàn toàn
+                    f.write("timeout /t 5 /nobreak > nul\n")
+                    # Thử copy nhiều lần trong trường hợp file bị khóa
+                    f.write(":retry_copy\n")
+                    f.write(f'if exist "{self.exe_path}" (\n')
+                    f.write(f'  copy /Y "{new_exe_path}" "{self.exe_path}" 2>nul\n')
+                    f.write("  if errorlevel 1 (\n")
+                    f.write("    echo Dang thu lai...\n")
+                    f.write("    timeout /t 2 /nobreak > nul\n")
+                    f.write("    goto retry_copy\n")
+                    f.write("  )\n")
+                    f.write(")\n")
+                    # Dọn dẹp và khởi động lại
+                    f.write("echo Da thay the file exe thanh cong!\n")
+                    f.write(f'start "" "{restart_script}"\n')
+                    f.write(f'rmdir /S /Q "{temp_dir}" 2>nul\n')
+                    f.write(f'rmdir /S /Q "{os.path.join(self.app_path, "build")}" 2>nul\n')
+                    f.write(f'rmdir /S /Q "{os.path.join(self.app_path, "dist")}" 2>nul\n')
+                    f.write("exit\n")
                 
-                # Chạy file batch trong một tiến trình riêng biệt
-                subprocess.Popen(["cmd", "/c", replace_script], 
-                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                                shell=True)
+                # Tạo file VBS để yêu cầu quyền Admin khi chạy batch script
+                elevate_vbs = os.path.join(temp_dir, "elevate.vbs")
+                with open(elevate_vbs, 'w') as f:
+                    f.write('Set UAC = CreateObject("Shell.Application")\n')
+                    f.write(f'UAC.ShellExecute "cmd.exe", "/c """{replace_script}"""", "", "runas", 1\n')
+                
+                # Chạy file VBS để thực thi script với quyền admin
+                logger.info("Đang chuẩn bị thay thế file exe với quyền admin...")
+                subprocess.Popen(["wscript.exe", elevate_vbs], 
+                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
                 
                 logger.info("Đã tạo lệnh thay thế file exe, ứng dụng sẽ khởi động lại sau khi hoàn tất")
                 return True
             else:
-                logger.error("Không thể tạo file exe mới")
+                logger.error(f"Không thể tạo file exe mới. Đường dẫn {new_exe_path} không tồn tại.")
                 return False
                 
         except Exception as e:
@@ -295,8 +357,21 @@ class AutoOfficeUpdater:
             
             # Nếu đang chạy từ exe
             if self.is_frozen:
-                # Không cần restart vì đã được xử lý trong build_new_exe
+                # Tạo một file batch để đợi tiến trình hiện tại kết thúc và hiển thị thông báo cho người dùng
+                temp_dir = os.path.join(self.app_path, "temp_update")
+                os.makedirs(temp_dir, exist_ok=True)
+                
+                message_script = os.path.join(temp_dir, "update_message.vbs")
+                with open(message_script, 'w') as f:
+                    f.write('WScript.Sleep 1000\n')  # Đợi 1 giây
+                    f.write('MsgBox "Ứng dụng đang được cập nhật. Vui lòng đợi trong giây lát...", 64, "Đang cập nhật"\n')
+                
+                # Chạy script thông báo trong tiến trình riêng biệt
+                subprocess.Popen(["wscript.exe", message_script],
+                               creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                
                 logger.info("Ứng dụng sẽ được khởi động lại sau khi thay thế file exe")
+                # Thoát ứng dụng để file exe không bị khóa
                 os._exit(0)
             else:
                 # Nếu đang chạy từ mã nguồn Python
@@ -304,6 +379,7 @@ class AutoOfficeUpdater:
                 main_script = os.path.join(self.app_path, "main.py")
                 
                 # Khởi động một tiến trình mới
+                logger.info(f"Khởi động lại ứng dụng từ {main_script}")
                 subprocess.Popen([python, main_script], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
                 
                 # Thoát tiến trình hiện tại
@@ -311,20 +387,27 @@ class AutoOfficeUpdater:
             
         except Exception as e:
             logger.error(f"Lỗi khi khởi động lại ứng dụng: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
             
     def update_with_confirmation(self, parent_window=None):
         """Kiểm tra, xác nhận và thực hiện cập nhật."""
-        has_update, new_version = self.check_for_updates()
+        has_update, new_version, changes = self.check_for_updates()
         
         if not has_update:
             return False
             
+        # Tạo chuỗi thông tin thay đổi
+        changes_text = ""
+        if changes:
+            changes_text = "\n".join([f"- {change}" for change in changes])
+        
         # Hiển thị hộp thoại xác nhận
         if parent_window:
             result = messagebox.askyesno(
                 "Cập nhật mới", 
-                f"Có phiên bản mới: {new_version}\nBạn có muốn cập nhật ngay bây giờ không?",
+                f"Có phiên bản mới: {new_version}\nBạn có muốn cập nhật ngay bây giờ không?\n\nCác thay đổi:\n{changes_text}",
                 parent=parent_window
             )
         else:
@@ -333,7 +416,7 @@ class AutoOfficeUpdater:
             temp_window.withdraw()  # Ẩn cửa sổ
             result = messagebox.askyesno(
                 "Cập nhật mới", 
-                f"Có phiên bản mới: {new_version}\nBạn có muốn cập nhật ngay bây giờ không?"
+                f"Có phiên bản mới: {new_version}\nBạn có muốn cập nhật ngay bây giờ không?\n\nCác thay đổi:\n{changes_text}"
             )
             temp_window.destroy()
             
