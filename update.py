@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 import time
 import psutil
 
@@ -250,6 +250,15 @@ class AutoOfficeUpdater:
             # Tên exe mới
             exe_name = self.original_exe_name if self.original_exe_name else "AutoOffice.exe"
             
+            # Xóa file exe cũ trong thư mục dist nếu có
+            old_dist_exe = os.path.join(dist_dir, exe_name)
+            if os.path.exists(old_dist_exe):
+                try:
+                    os.remove(old_dist_exe)
+                    logger.info(f"Đã xóa file exe cũ trong thư mục dist: {old_dist_exe}")
+                except Exception as e:
+                    logger.warning(f"Không thể xóa file exe cũ trong dist: {e}")
+            
             # Thực hiện lệnh build
             build_cmd = [
                 sys.executable,
@@ -270,7 +279,13 @@ class AutoOfficeUpdater:
                 logger.error(f"Build exe thất bại: {result.stderr}")
                 return False
             
-            logger.info("Build exe thành công")
+            # Kiểm tra xem file exe mới có tồn tại không
+            new_exe = os.path.join(dist_dir, exe_name)
+            if not os.path.exists(new_exe):
+                logger.error(f"Không tìm thấy file exe mới sau khi build: {new_exe}")
+                return False
+                
+            logger.info(f"Build exe thành công: {new_exe}")
             return True
             
         except Exception as e:
@@ -310,20 +325,66 @@ class AutoOfficeUpdater:
                 logger.error(f"Không tìm thấy file exe mới: {new_exe}")
                 return False
             
-            # Tạo batch file để thay thế exe
+            # Tạo batch file để thay thế exe với đường dẫn đầy đủ
             batch_path = os.path.join(self.app_path, "update_exe.bat")
+            
+            # Lấy PID của process hiện tại
+            current_pid = os.getpid()
+            
             with open(batch_path, 'w') as f:
                 f.write('@echo off\n')
-                f.write('timeout /t 3 /nobreak > nul\n')  # Đợi một chút để exe hiện tại đóng
-                f.write(f'copy /y "{new_exe}" "{old_exe}"\n')  # Thay thế exe
-                f.write(f'start "" "{old_exe}"\n')  # Chạy exe mới
-                f.write('del "%~f0"\n')  # Tự xóa batch file
+                f.write('echo Updating AutoOffice...\n')
+                
+                # Đợi process hiện tại kết thúc
+                f.write(f'echo Waiting for process {current_pid} to end...\n')
+                f.write(f'set /a wait_count=0\n')
+                f.write(':wait_loop\n')
+                f.write(f'tasklist /fi "PID eq {current_pid}" | find "{current_pid}" > nul\n')
+                f.write('if not errorlevel 1 (\n')
+                f.write('  timeout /t 1 /nobreak > nul\n')
+                f.write('  set /a wait_count+=1\n')
+                f.write('  if %wait_count% gtr 30 (\n')
+                f.write('    echo Timeout waiting for process to end\n')
+                f.write('    goto :force_close\n')
+                f.write('  )\n')
+                f.write('  goto wait_loop\n')
+                f.write(')\n')
+                
+                # Nếu quá thời gian chờ, thử kết thúc bằng taskkill
+                f.write(':force_close\n')
+                f.write(f'taskkill /F /PID {current_pid} /T > nul 2>&1\n')
+                f.write('timeout /t 2 /nobreak > nul\n')
+                
+                # Thay thế file exe
+                f.write('echo Replacing executable...\n')
+                f.write(f'copy /y "{new_exe}" "{old_exe}"\n')
+                f.write('if errorlevel 1 (\n')
+                f.write('  echo Failed to copy new executable\n')
+                f.write('  pause\n')
+                f.write('  exit /b 1\n')
+                f.write(')\n')
+                
+                # Chạy exe mới
+                f.write('echo Starting new version...\n')
+                f.write(f'start "" "{old_exe}"\n')
+                
+                # Xóa batch file
+                f.write('timeout /t 2 /nobreak > nul\n')
+                f.write('del "%~f0"\n')
             
-            # Chạy batch file và thoát ứng dụng hiện tại
-            subprocess.Popen(['cmd', '/c', batch_path], 
-                            creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NO_WINDOW)
+            # Tạo shortcut để chạy batch file với quyền admin
+            vbs_path = os.path.join(self.app_path, "run_as_admin.vbs")
+            with open(vbs_path, 'w') as f:
+                f.write('Set UAC = CreateObject("Shell.Application")\n')
+                f.write(f'UAC.ShellExecute "{batch_path}", "", "", "runas", 1\n')
+            
+            # Chạy VBS file để mở batch với quyền admin
+            subprocess.Popen(['wscript.exe', vbs_path], 
+                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
             
             logger.info("Đã chuẩn bị thay thế và khởi động lại exe")
+            # Chờ 2 giây để VBS kịp chạy batch
+            time.sleep(2)
             return True
             
         except Exception as e:
@@ -361,11 +422,148 @@ class AutoOfficeUpdater:
             logger.error(f"Lỗi khi khởi động lại ứng dụng: {e}")
             return False
             
+    def create_update_batch(self, extracted_dir=None):
+        """Tạo batch file để build và thay thế exe sau khi ứng dụng đóng."""
+        try:
+            logger.info("Đang tạo batch file để hoàn tất cập nhật...")
+            
+            # Đường dẫn đến file exe hiện tại
+            if not self.is_frozen:
+                logger.info("Không phải chạy từ exe, bỏ qua tạo batch update")
+                return False
+                
+            # Lấy thông tin cần thiết
+            current_pid = os.getpid()
+            old_exe = self.exe_path
+            exe_name = os.path.basename(old_exe)
+            exe_dir = os.path.dirname(old_exe)
+            app_dir = self.app_path
+            
+            # Tạo batch file để hoàn tất cập nhật
+            batch_path = os.path.join(self.app_path, "finish_update.bat")
+            
+            with open(batch_path, 'w') as f:
+                f.write('@echo off\n')
+                f.write('echo ===== AUTO OFFICE UPDATE =====\n')
+                f.write('echo Dang hoan tat cap nhat AutoOffice...\n')
+                
+                # Đợi process hiện tại kết thúc
+                f.write(f'echo Dang doi ung dung dong (PID: {current_pid})...\n')
+                f.write(f'set /a wait_count=0\n')
+                f.write(':wait_loop\n')
+                f.write(f'tasklist /fi "PID eq {current_pid}" | find "{current_pid}" > nul\n')
+                f.write('if not errorlevel 1 (\n')
+                f.write('  echo Process dang chay, cho 1 giay...\n')
+                f.write('  timeout /t 1 /nobreak > nul\n')
+                f.write('  set /a wait_count+=1\n')
+                f.write('  if %wait_count% gtr 10 (\n')
+                f.write('    echo Ket thuc cuong buc process...\n')
+                f.write('    goto :force_close\n')
+                f.write('  )\n')
+                f.write('  goto wait_loop\n')
+                f.write(')\n')
+                f.write('goto :continue_update\n')
+                
+                # Kết thúc cưỡng bức nếu cần
+                f.write(':force_close\n')
+                f.write(f'taskkill /F /PID {current_pid} /T > nul 2>&1\n')
+                f.write('timeout /t 2 /nobreak > nul\n')
+                
+                # Tiếp tục cập nhật
+                f.write(':continue_update\n')
+                f.write('echo Process da dong, tiep tuc cap nhat...\n')
+                f.write('echo.\n')
+                
+                # Cài đặt PyInstaller nếu cần
+                f.write('echo Kiem tra va cai dat PyInstaller...\n')
+                f.write(f'"{sys.executable}" -m pip install pyinstaller --quiet\n')
+                f.write('if errorlevel 1 (\n')
+                f.write('  echo Khong the cai dat PyInstaller\n')
+                f.write('  pause\n')
+                f.write('  exit /b 1\n')
+                f.write(')\n')
+                
+                # Build exe mới
+                f.write('echo Dang tao file exe moi...\n')
+                f.write(f'cd /d "{app_dir}"\n')  # Đảm bảo thư mục làm việc đúng
+                
+                # Tạo thư mục dist nếu chưa có
+                f.write('if not exist "dist" mkdir dist\n')
+                
+                # Xóa exe cũ trong thư mục dist nếu có
+                f.write(f'if exist "dist\\{exe_name}" del /f /q "dist\\{exe_name}"\n')
+                
+                # Tạo lệnh build exe
+                icon_path = os.path.join(app_dir, "Logo.png")
+                main_script = os.path.join(app_dir, "main.py")
+                py_exe = sys.executable
+                
+                build_cmd = (f'"{py_exe}" -m PyInstaller --noconfirm --onefile --windowed '
+                          f'--name="{os.path.splitext(exe_name)[0]}" '
+                          f'--add-data="{icon_path};." "{main_script}"')
+                
+                f.write(f'{build_cmd}\n')
+                f.write('if errorlevel 1 (\n')
+                f.write('  echo Khong the tao file exe moi. Loi PyInstaller.\n')
+                f.write('  pause\n')
+                f.write('  exit /b 1\n')
+                f.write(')\n')
+                
+                # Kiểm tra xem file exe mới đã được tạo chưa
+                f.write(f'if not exist "dist\\{exe_name}" (\n')
+                f.write('  echo Khong tim thay file exe moi sau khi build.\n')
+                f.write('  pause\n')
+                f.write('  exit /b 1\n')
+                f.write(')\n')
+                
+                # Thay thế file exe cũ
+                f.write('echo Dang thay the file exe cu...\n')
+                f.write(f'copy /y "dist\\{exe_name}" "{old_exe}"\n')
+                f.write('if errorlevel 1 (\n')
+                f.write('  echo Khong the sao chep file exe moi.\n')
+                f.write('  echo Thu mo lai voi quyen quan tri...\n')
+                f.write('  goto :try_admin\n')
+                f.write(')\n')
+                f.write('goto :finish\n')
+                
+                # Thử với quyền admin
+                f.write(':try_admin\n')
+                f.write('echo Set UAC = CreateObject^("Shell.Application"^) > "%temp%\\elevate.vbs"\n')
+                f.write(f'echo UAC.ShellExecute "cmd.exe", "/c copy /y ""dist\\{exe_name}"" ""{old_exe}"" && echo Cap nhat thanh cong && pause", "", "runas", 1 >> "%temp%\\elevate.vbs"\n')
+                f.write('"%temp%\\elevate.vbs"\n')
+                f.write('del "%temp%\\elevate.vbs"\n')
+                f.write('exit /b 0\n')
+                
+                # Hoàn thành và chạy exe mới
+                f.write(':finish\n')
+                f.write('echo Cap nhat hoan tat thanh cong!\n')
+                f.write(f'start "" "{old_exe}"\n')
+                f.write('echo Dang khoi dong lai ung dung...\n')
+                f.write('timeout /t 2 /nobreak > nul\n')
+                f.write('del "%~f0"\n')
+            
+            # Tạo shortcut để chạy batch file với quyền admin
+            vbs_path = os.path.join(self.app_path, "run_update.vbs")
+            with open(vbs_path, 'w') as f:
+                f.write('Set UAC = CreateObject("Shell.Application")\n')
+                f.write(f'UAC.ShellExecute "{batch_path}", "", "", "runas", 1\n')
+            
+            logger.info(f"Đã tạo batch file cập nhật: {batch_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Lỗi khi tạo batch file cập nhật: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
     def update_with_confirmation(self, parent_window=None):
         """Kiểm tra, xác nhận và thực hiện cập nhật."""
         has_update, new_version = self.check_for_updates()
         
         if not has_update:
+            if parent_window:
+                messagebox.showinfo("Cập nhật", "Bạn đang sử dụng phiên bản mới nhất.", parent=parent_window)
             return False
             
         # Hiển thị hộp thoại xác nhận
@@ -393,40 +591,126 @@ class AutoOfficeUpdater:
         logger.info("Người dùng đã chọn cập nhật")
         
         # Hiển thị thông báo đang cập nhật
+        update_window = None
+        update_label = None
+        progress_var = None
+        
         if parent_window:
-            messagebox.showinfo(
-                "Đang cập nhật", 
-                "Ứng dụng sẽ tự động khởi động lại sau khi cập nhật hoàn tất.",
-                parent=parent_window
-            )
+            # Tạo cửa sổ thông báo tiến trình
+            update_window = tk.Toplevel(parent_window)
+            update_window.title("Đang cập nhật")
+            update_window.geometry("300x100")
+            update_window.resizable(False, False)
+            update_window.transient(parent_window)
+            
+            # Tạo các widget trong cửa sổ
+            update_label = tk.Label(update_window, text="Đang tải bản cập nhật...")
+            update_label.pack(pady=10)
+            
+            progress_var = tk.IntVar()
+            progress_bar = ttk.Progressbar(update_window, variable=progress_var, maximum=100)
+            progress_bar.pack(fill=tk.X, padx=20, pady=10)
+            
+            # Cập nhật giao diện
+            update_window.update()
         
         # Tải xuống bản cập nhật
         extracted_dir = self.download_update()
         if not extracted_dir:
+            if update_window:
+                update_window.destroy()
             if parent_window:
                 messagebox.showerror("Lỗi", "Không thể tải xuống bản cập nhật.", parent=parent_window)
             return False
             
+        # Cập nhật tiến trình
+        if update_label:
+            update_label.config(text="Đang áp dụng bản cập nhật...")
+            progress_var.set(40)
+            update_window.update()
+        
         # Áp dụng bản cập nhật
         if not self.apply_update(extracted_dir):
+            if update_window:
+                update_window.destroy()
             if parent_window:
                 messagebox.showerror("Lỗi", "Không thể áp dụng bản cập nhật.", parent=parent_window)
             return False
         
-        # Nếu đang chạy từ file exe, build exe mới
+        # Cập nhật tiến trình
+        if update_label:
+            progress_var.set(60)
+            update_window.update()
+        
+        # Nếu đang chạy từ file exe, tạo batch file để hoàn tất cập nhật
         if self.is_frozen:
+            if update_label:
+                update_label.config(text="Đang chuẩn bị build file exe...")
+                progress_var.set(80)
+                update_window.update()
+            
+            # Tạo batch file để hoàn tất cập nhật
+            if not self.create_update_batch(extracted_dir):
+                if update_window:
+                    update_window.destroy()
+                if parent_window:
+                    messagebox.showerror("Lỗi", "Không thể tạo quy trình build exe.", parent=parent_window)
+                return False
+            
+            # Cập nhật tiến trình
+            if update_label:
+                update_label.config(text="Đang chuẩn bị khởi động lại...")
+                progress_var.set(90)
+                update_window.update()
+            
+            # Hiển thị thông báo thành công
+            if update_window:
+                update_window.destroy()
+                
+            if parent_window:
+                restart_result = messagebox.askyesno(
+                    "Cập nhật thành công", 
+                    "Quá trình tải và cập nhật mã nguồn đã hoàn tất.\n\n"
+                    "Ứng dụng cần đóng để hoàn tất cập nhật và build file exe mới.\n"
+                    "Quá trình này có thể mất vài phút.\n\n"
+                    "Bạn có muốn tiếp tục không?",
+                    parent=parent_window
+                )
+                
+                if not restart_result:
+                    messagebox.showinfo(
+                        "Cập nhật hoãn lại",
+                        "Quá trình cập nhật đã bị hoãn lại.\n"
+                        "Mã nguồn đã được cập nhật, nhưng file exe chưa được cập nhật.\n"
+                        "Bạn có thể tiếp tục sử dụng phiên bản hiện tại.",
+                        parent=parent_window
+                    )
+                    return False
+            
+            # Chạy VBS để khởi động batch file với quyền admin và thoát
+            vbs_path = os.path.join(self.app_path, "run_update.vbs")
+            subprocess.Popen(['wscript.exe', vbs_path], 
+                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            
+            # Đợi 1 giây để batch file có thể chạy
+            time.sleep(1)
+            
+            # Thoát ứng dụng
+            os._exit(0)
+            
+        else:
+            # Nếu chạy từ Python, chỉ cần khởi động lại
+            if update_window:
+                update_window.destroy()
+                
             if parent_window:
                 messagebox.showinfo(
-                    "Đang cập nhật", 
-                    "Đang tạo file exe mới, vui lòng chờ...",
+                    "Cập nhật thành công", 
+                    "Ứng dụng sẽ tự động khởi động lại để hoàn tất cập nhật.",
                     parent=parent_window
                 )
             
-            if not self.build_exe():
-                if parent_window:
-                    messagebox.showerror("Lỗi", "Không thể tạo file exe mới.", parent=parent_window)
-                return False
+            # Khởi động lại ứng dụng
+            self.restart_application()
         
-        # Khởi động lại ứng dụng
-        self.restart_application()
         return True
