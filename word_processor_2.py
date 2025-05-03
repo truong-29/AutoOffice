@@ -16,7 +16,25 @@ import sys
 import comtypes.client
 import time
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+try:
+    from update import get_application_path
+except ImportError:
+    # Nếu không import được, định nghĩa hàm tạm thời
+    def get_application_path():
+        return os.path.dirname(os.path.abspath(__file__))
+
+# Lấy đường dẫn ứng dụng
+app_path = get_application_path()
+
+# Thiết lập logging
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(app_path, "word_processor_advanced.log"), encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 class EmptyPageDetector:

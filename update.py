@@ -1,30 +1,43 @@
 import json
 import os
+import requests
 import logging
+import zipfile
+import io
+import shutil
+import subprocess
 import sys
 import tkinter as tk
 from tkinter import messagebox
-import requests
-import zipfile
-import shutil
-import subprocess
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+def get_application_path():
+    """Lấy đường dẫn đến thư mục chứa ứng dụng, hoạt động cả với file exe và mã nguồn."""
+    if getattr(sys, 'frozen', False):
+        # Nếu đang chạy từ file exe (đã đóng gói)
+        application_path = os.path.dirname(sys.executable)
+    else:
+        # Nếu đang chạy từ mã nguồn
+        application_path = os.path.dirname(os.path.abspath(__file__))
+        
+    logger.info(f"Đường dẫn ứng dụng: {application_path}")
+    return application_path
 
 class AutoOfficeUpdater:
     def __init__(self, repo_url="https://github.com/truong-29/AutoOffice"):
         self.repo_url = repo_url
         self.repo_owner = "truong-29"
         self.repo_name = "AutoOffice"
+        self.api_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/contents/version.json"
+        self.app_path = get_application_path()
         self.current_version = self._get_current_version()
-        self.app_path = os.path.dirname(os.path.abspath(__file__))
-        self.temp_dir = os.path.join(self.app_path, "temp_update")
         
     def _get_current_version(self):
         """Lấy phiên bản hiện tại từ file version.json."""
         try:
-            version_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.json")
+            version_path = os.path.join(self.app_path, "version.json")
             
             if not os.path.exists(version_path):
                 # Tạo file version.json nếu không tồn tại
@@ -51,200 +64,174 @@ class AutoOfficeUpdater:
             return "1.0.0"
     
     def check_for_updates(self):
-        """Kiểm tra phiên bản mới nhất từ GitHub."""
+        """Kiểm tra cập nhật từ GitHub repository."""
         try:
             logger.info("Đang kiểm tra cập nhật...")
             
-            # Lấy thông tin phiên bản mới nhất từ GitHub
-            api_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/releases/latest"
-            response = requests.get(api_url, timeout=10)
+            response = requests.get(self.api_url)
             
             if response.status_code != 200:
-                logger.error(f"Không thể lấy thông tin phiên bản: {response.status_code}")
+                logger.error(f"Lỗi khi kiểm tra cập nhật: HTTP {response.status_code}")
+                return False, None
+            
+            # Lấy nội dung file version.json từ GitHub
+            content_data = response.json()
+            if "content" not in content_data:
+                logger.error("Không tìm thấy trường 'content' trong phản hồi API")
                 return False, None
                 
-            release_data = response.json()
-            latest_version = release_data.get("tag_name", "").replace("v", "")
+            import base64
+            content = base64.b64decode(content_data["content"]).decode("utf-8")
+            remote_version_data = json.loads(content)
             
-            logger.info(f"Phiên bản mới nhất: {latest_version}")
-            logger.info(f"Phiên bản hiện tại: {self.current_version}")
+            remote_version = remote_version_data.get("version", "1.0.0")
             
             # So sánh phiên bản
-            if self._compare_versions(latest_version, self.current_version) > 0:
-                return True, latest_version
+            has_update = self._compare_versions(self.current_version, remote_version)
+            
+            if has_update:
+                logger.info(f"Có phiên bản mới: {remote_version}")
+                return True, remote_version
             else:
-                return False, latest_version
+                logger.info("Không có cập nhật mới")
+                return False, remote_version
                 
         except Exception as e:
             logger.error(f"Lỗi khi kiểm tra cập nhật: {e}")
             return False, None
     
-    def _compare_versions(self, version1, version2):
-        """So sánh hai phiên bản. Trả về 1 nếu version1 > version2, 0 nếu bằng, -1 nếu nhỏ hơn."""
-        v1_parts = [int(x) for x in version1.split(".")]
-        v2_parts = [int(x) for x in version2.split(".")]
-        
-        # Đảm bảo cả hai danh sách có cùng độ dài
-        while len(v1_parts) < 3:
-            v1_parts.append(0)
-        while len(v2_parts) < 3:
-            v2_parts.append(0)
+    def _compare_versions(self, current, remote):
+        """So sánh phiên bản hiện tại với phiên bản mới từ server."""
+        try:
+            current_parts = list(map(int, current.split('.')))
+            remote_parts = list(map(int, remote.split('.')))
             
-        for i in range(3):
-            if v1_parts[i] > v2_parts[i]:
-                return 1
-            elif v1_parts[i] < v2_parts[i]:
-                return -1
-                
-        return 0
+            # Thêm các phần thiếu nếu cần
+            while len(current_parts) < 3:
+                current_parts.append(0)
+            while len(remote_parts) < 3:
+                remote_parts.append(0)
+            
+            # So sánh từng phần
+            for i in range(3):
+                if remote_parts[i] > current_parts[i]:
+                    return True
+                if remote_parts[i] < current_parts[i]:
+                    return False
+            
+            # Nếu giống nhau
+            return False
+            
+        except Exception as e:
+            logger.error(f"Lỗi khi so sánh phiên bản: {e}")
+            return False
     
     def get_update_url(self):
         """Trả về URL để người dùng tải bản cập nhật mới."""
-        return f"{self.repo_url}/releases/latest"
-    
-    def download_update(self, version):
+        return self.repo_url + "/releases"
+        
+    def download_update(self):
         """Tải xuống bản cập nhật mới từ GitHub."""
         try:
-            # Tạo thư mục tạm thời nếu chưa tồn tại
-            if os.path.exists(self.temp_dir):
-                shutil.rmtree(self.temp_dir)
-                
-            os.makedirs(self.temp_dir, exist_ok=True)
+            logger.info("Đang tải xuống bản cập nhật mới...")
             
-            # Lấy thông tin bản phát hành mới nhất
-            api_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/releases/latest"
-            response = requests.get(api_url, timeout=10)
+            # URL để tải xuống repository dưới dạng zip
+            download_url = f"https://github.com/{self.repo_owner}/{self.repo_name}/archive/refs/heads/main.zip"
+            
+            response = requests.get(download_url, stream=True)
             
             if response.status_code != 200:
-                logger.error(f"Không thể lấy thông tin bản phát hành: {response.status_code}")
+                logger.error(f"Lỗi khi tải xuống bản cập nhật: HTTP {response.status_code}")
                 return False
                 
-            release_data = response.json()
+            # Tạo bộ nhớ đệm để lưu trữ dữ liệu zip
+            buffer = io.BytesIO()
             
-            # Tìm asset ZIP để tải xuống
-            zip_asset = None
-            for asset in release_data.get("assets", []):
-                if asset.get("name", "").endswith(".zip"):
-                    zip_asset = asset
+            # Tải xuống và lưu vào bộ nhớ đệm
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:
+                    buffer.write(chunk)
+                    
+            buffer.seek(0)
+            
+            # Tạo thư mục tạm thời để giải nén
+            temp_dir = os.path.join(self.app_path, "temp_update")
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            os.makedirs(temp_dir)
+            
+            # Giải nén tệp zip
+            with zipfile.ZipFile(buffer) as zip_ref:
+                zip_ref.extractall(temp_dir)
+                
+            # Tìm thư mục giải nén
+            extracted_dir = None
+            for item in os.listdir(temp_dir):
+                item_path = os.path.join(temp_dir, item)
+                if os.path.isdir(item_path):
+                    extracted_dir = item_path
                     break
                     
-            if not zip_asset:
-                logger.error("Không tìm thấy file ZIP trong bản phát hành")
+            if not extracted_dir:
+                logger.error("Không tìm thấy thư mục sau khi giải nén")
                 return False
                 
-            # Tải xuống file ZIP
-            download_url = zip_asset.get("browser_download_url")
-            zip_path = os.path.join(self.temp_dir, "update.zip")
-            
-            logger.info(f"Đang tải xuống bản cập nhật từ: {download_url}")
-            
-            response = requests.get(download_url, stream=True, timeout=60)
-            
-            if response.status_code != 200:
-                logger.error(f"Không thể tải xuống bản cập nhật: {response.status_code}")
-                return False
-                
-            with open(zip_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    
-            logger.info(f"Đã tải xuống bản cập nhật vào: {zip_path}")
-            return True
+            logger.info(f"Đã giải nén file vào: {extracted_dir}")
+            return extracted_dir
             
         except Exception as e:
             logger.error(f"Lỗi khi tải xuống bản cập nhật: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
-    
-    def apply_update(self):
-        """Giải nén và áp dụng bản cập nhật."""
+            
+    def start_update_launcher(self, extracted_dir, new_version):
+        """Khởi động update_launcher.py để tiến hành cập nhật."""
         try:
-            # Đường dẫn đến file ZIP
-            zip_path = os.path.join(self.temp_dir, "update.zip")
-            extract_path = os.path.join(self.temp_dir, "extracted")
+            logger.info("Đang khởi động update launcher...")
             
-            if not os.path.exists(zip_path):
-                logger.error("Không tìm thấy file ZIP")
-                return False
-                
-            # Tạo thư mục giải nén
-            if os.path.exists(extract_path):
-                shutil.rmtree(extract_path)
-                
-            os.makedirs(extract_path, exist_ok=True)
+            # Đường dẫn đến update_launcher.py
+            update_launcher_path = os.path.join(self.app_path, "update_launcher.py")
             
-            # Giải nén file ZIP
-            logger.info(f"Đang giải nén file {zip_path}...")
-            
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_path)
-                
-            logger.info(f"Đã giải nén vào: {extract_path}")
-            
-            # Tìm thư mục gốc trong bản giải nén
-            root_dir = extract_path
-            subdirs = [d for d in os.listdir(extract_path) if os.path.isdir(os.path.join(extract_path, d))]
-            
-            if len(subdirs) == 1:
-                root_dir = os.path.join(extract_path, subdirs[0])
-                
-            # Sao chép các file từ bản cập nhật vào thư mục ứng dụng
-            logger.info("Đang sao chép các file cập nhật...")
-            
-            for item in os.listdir(root_dir):
-                source = os.path.join(root_dir, item)
-                destination = os.path.join(self.app_path, item)
-                
-                # Bỏ qua các file không cần thiết
-                if item == ".gitattributes":
-                    continue
-                    
-                # Sao chép file/thư mục
-                if os.path.isdir(source):
-                    if os.path.exists(destination):
-                        shutil.rmtree(destination)
-                    shutil.copytree(source, destination)
+            # Kiểm tra xem file update_launcher.py có tồn tại không
+            if not os.path.exists(update_launcher_path):
+                # Copy update_launcher.py từ thư mục giải nén nếu có
+                src_launcher_path = os.path.join(extracted_dir, "update_launcher.py")
+                if os.path.exists(src_launcher_path):
+                    shutil.copy2(src_launcher_path, update_launcher_path)
                 else:
-                    shutil.copy2(source, destination)
-                    
-            logger.info("Đã áp dụng cập nhật thành công")
+                    logger.error("Không tìm thấy update_launcher.py")
+                    return False
+            
+            # Khởi động update_launcher.py với tham số là đường dẫn thư mục giải nén và phiên bản mới
+            python_exe = sys.executable
+            
+            # Kiểm tra nếu đang chạy từ file exe
+            if getattr(sys, 'frozen', False):
+                # Nếu đã được đóng gói thành exe, tìm file update_launcher.exe
+                update_launcher_exe = os.path.join(self.app_path, "update_launcher.exe")
+                if os.path.exists(update_launcher_exe):
+                    subprocess.Popen([update_launcher_exe, extracted_dir, new_version])
+                else:
+                    # Nếu không có file exe, sử dụng python
+                    subprocess.Popen(["python", update_launcher_path, extracted_dir, new_version], cwd=self.app_path)
+            else:
+                # Nếu đang chạy từ mã nguồn
+                subprocess.Popen([python_exe, update_launcher_path, extracted_dir, new_version], cwd=self.app_path)
+                
+            logger.info("Đã khởi động update launcher thành công")
+            
+            # Thoát ứng dụng hiện tại để update_launcher tiếp quản
+            os._exit(0)
+            
             return True
             
         except Exception as e:
-            logger.error(f"Lỗi khi áp dụng bản cập nhật: {e}")
+            logger.error(f"Lỗi khi khởi động update launcher: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
-        finally:
-            # Dọn dẹp
-            try:
-                if os.path.exists(self.temp_dir):
-                    shutil.rmtree(self.temp_dir)
-            except Exception:
-                pass
-    
-    def restart_application(self):
-        """Khởi động lại ứng dụng sau khi cập nhật."""
-        try:
-            logger.info("Đang khởi động lại ứng dụng...")
             
-            # Tạo lệnh để khởi động lại ứng dụng
-            is_frozen = getattr(sys, 'frozen', False)
-            
-            if is_frozen:
-                # Nếu là file exe (đã đóng gói)
-                app_path = sys.executable
-                subprocess.Popen([app_path], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            else:
-                # Nếu là script Python
-                python = sys.executable
-                main_script = os.path.join(self.app_path, "main.py")
-                subprocess.Popen([python, main_script], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            
-            # Thoát tiến trình hiện tại
-            os._exit(0)
-            
-        except Exception as e:
-            logger.error(f"Lỗi khi khởi động lại ứng dụng: {e}")
-            return False
-    
     def update_with_confirmation(self, parent_window=None):
         """Kiểm tra, xác nhận và thực hiện cập nhật."""
         has_update, new_version = self.check_for_updates()
@@ -280,23 +267,25 @@ class AutoOfficeUpdater:
         if parent_window:
             messagebox.showinfo(
                 "Đang cập nhật", 
-                "Ứng dụng sẽ tự động khởi động lại sau khi cập nhật hoàn tất.",
+                "Ứng dụng đang tải xuống bản cập nhật. Vui lòng đợi...",
                 parent=parent_window
             )
         
         # Tải xuống bản cập nhật
-        if not self.download_update(new_version):
+        extracted_dir = self.download_update()
+        if not extracted_dir:
             if parent_window:
                 messagebox.showerror("Lỗi", "Không thể tải xuống bản cập nhật.", parent=parent_window)
             return False
             
-        # Áp dụng bản cập nhật
-        if not self.apply_update():
-            if parent_window:
-                messagebox.showerror("Lỗi", "Không thể áp dụng bản cập nhật.", parent=parent_window)
-            return False
+        # Khởi động update_launcher để tiến hành cập nhật
+        if parent_window:
+            messagebox.showinfo(
+                "Cập nhật", 
+                "Ứng dụng sẽ đóng và tiến hành cập nhật. Vui lòng không tắt máy tính.",
+                parent=parent_window
+            )
             
-        # Khởi động lại ứng dụng
-        self.restart_application()
+        # Khởi động update_launcher và thoát ứng dụng hiện tại
+        self.start_update_launcher(extracted_dir, new_version)
         return True
-            

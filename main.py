@@ -5,22 +5,17 @@ import os
 
 from word_processor_1 import WordProcessor
 from gui import AutoOfficeGUI
-from update import AutoOfficeUpdater
+from update import AutoOfficeUpdater, get_application_path
 
-# Thiết lập app ID cho Windows
-try:
-    from ctypes import windll  # Chỉ tồn tại trên Windows
-    myappid = "truong.autooffice.removeblanks.1.0"
-    windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-except ImportError:
-    pass
+# Thiết lập đường dẫn ứng dụng
+app_path = get_application_path()
 
 # Thiết lập logging
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("autooffice.log", encoding='utf-8'),
+        logging.FileHandler(os.path.join(app_path, "autooffice.log"), encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -38,10 +33,13 @@ def main():
         
         # Thiết lập icon nếu có
         try:
-            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.png")
+            logo_path = os.path.join(app_path, "Logo.png")
             if os.path.exists(logo_path):
                 logo_icon = tk.PhotoImage(file=logo_path)
                 root.iconphoto(True, logo_icon)
+                logger.info("Đã tải logo ứng dụng")
+            else:
+                logger.warning(f"Không tìm thấy file logo tại {logo_path}")
         except Exception as e:
             logger.warning(f"Không thể thiết lập icon: {e}")
         

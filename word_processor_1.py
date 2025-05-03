@@ -4,8 +4,25 @@ from docx.shared import Pt
 import os
 import logging
 from word_processor_2 import EmptyPageDetector, PageAnalyzer
+try:
+    from update import get_application_path
+except ImportError:
+    # Nếu không import được, định nghĩa hàm tạm thời
+    def get_application_path():
+        return os.path.dirname(os.path.abspath(__file__))
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Lấy đường dẫn ứng dụng
+app_path = get_application_path()
+
+# Thiết lập logging
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(app_path, "word_processor.log"), encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 class WordProcessor:
