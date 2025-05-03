@@ -19,18 +19,37 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+def is_frozen():
+    """Kiểm tra xem ứng dụng có đang chạy từ file exe hay không."""
+    return getattr(sys, 'frozen', False)
+
+def get_application_path():
+    """Lấy đường dẫn chứa ứng dụng, xử lý cả trường hợp exe và script Python."""
+    if is_frozen():
+        # Nếu đang chạy từ exe
+        return os.path.dirname(sys.executable)
+    else:
+        # Nếu đang chạy từ script Python
+        return os.path.dirname(os.path.abspath(__file__))
+
 def main():
     """Hàm chính khởi động ứng dụng."""
     try:
         # Khởi tạo các thành phần
         logger.info("Khởi động ứng dụng Auto Office")
         
+        if is_frozen():
+            logger.info("Ứng dụng đang chạy từ file exe")
+        else:
+            logger.info("Ứng dụng đang chạy từ mã nguồn Python")
+        
         # Tạo cửa sổ chính
         root = tk.Tk()
         
         # Thiết lập icon nếu có
         try:
-            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.png")
+            app_path = get_application_path()
+            logo_path = os.path.join(app_path, "Logo.png")
             if os.path.exists(logo_path):
                 logo_icon = tk.PhotoImage(file=logo_path)
                 root.iconphoto(True, logo_icon)

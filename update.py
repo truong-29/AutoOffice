@@ -21,6 +21,8 @@ class AutoOfficeUpdater:
         self.api_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/contents/version.json"
         self.current_version = self._get_current_version()
         self.app_path = os.path.dirname(os.path.abspath(__file__))
+        self.is_frozen = getattr(sys, 'frozen', False)
+        self.exe_path = sys.executable if self.is_frozen else None
         
     def _get_current_version(self):
         """Lấy phiên bản hiện tại từ file version.json."""
@@ -204,7 +206,13 @@ class AutoOfficeUpdater:
                 
             # Xóa thư mục tạm
             temp_dir = os.path.dirname(extracted_dir)
-            shutil.rmtree(temp_dir)
+            
+            # Nếu đang chạy từ file exe, cần build lại exe
+            if self.is_frozen:
+                self.build_new_exe(temp_dir)
+            else:
+                # Nếu không, xóa thư mục tạm
+                shutil.rmtree(temp_dir)
             
             logger.info("Đã áp dụng bản cập nhật thành công")
             return True
@@ -215,19 +223,91 @@ class AutoOfficeUpdater:
             logger.error(traceback.format_exc())
             return False
             
+    def build_new_exe(self, temp_dir):
+        """Đóng gói ứng dụng thành file exe mới và thay thế file exe cũ."""
+        try:
+            logger.info("Đang đóng gói ứng dụng thành file exe mới...")
+            
+            # Kiểm tra xem PyInstaller đã được cài đặt chưa
+            try:
+                import PyInstaller
+            except ImportError:
+                # Nếu chưa cài đặt, cài đặt PyInstaller
+                logger.info("Đang cài đặt PyInstaller...")
+                pip_command = [sys.executable, "-m", "pip", "install", "pyinstaller"]
+                subprocess.call(pip_command)
+            
+            # Tạo file batch để build exe
+            build_script = os.path.join(temp_dir, "build_exe.bat")
+            exe_output_dir = os.path.join(temp_dir, "dist")
+            main_script = os.path.join(self.app_path, "main.py")
+            
+            # Chuẩn bị lệnh PyInstaller
+            pyinstaller_cmd = f'"{sys.executable}" -m PyInstaller --onefile --windowed --icon="{os.path.join(self.app_path, "Logo.png")}" --name="AutoOffice" "{main_script}"'
+            
+            # Ghi file batch
+            with open(build_script, 'w') as f:
+                f.write(f"cd {self.app_path}\n")
+                f.write(pyinstaller_cmd)
+            
+            # Chạy file batch
+            logger.info("Đang chạy lệnh build exe...")
+            subprocess.call(build_script, shell=True)
+            
+            # Đường dẫn của file exe mới
+            new_exe_path = os.path.join(self.app_path, "dist", "AutoOffice.exe")
+            
+            # Kiểm tra xem file exe mới đã được tạo chưa
+            if os.path.exists(new_exe_path):
+                # Tạo file batch để thay thế file exe cũ
+                replace_script = os.path.join(temp_dir, "replace_exe.bat")
+                
+                with open(replace_script, 'w') as f:
+                    f.write("@echo off\n")
+                    f.write("timeout /t 2 /nobreak > nul\n")  # Đợi 2 giây
+                    f.write(f'copy /Y "{new_exe_path}" "{self.exe_path}"\n')
+                    f.write(f'start "" "{self.exe_path}"\n')
+                    f.write(f'rmdir /S /Q "{temp_dir}"\n')
+                    f.write(f'rmdir /S /Q "{os.path.join(self.app_path, "build")}"\n')
+                    f.write(f'rmdir /S /Q "{os.path.join(self.app_path, "dist")}"\n')
+                
+                # Chạy file batch trong một tiến trình riêng biệt
+                subprocess.Popen(["cmd", "/c", replace_script], 
+                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                                shell=True)
+                
+                logger.info("Đã tạo lệnh thay thế file exe, ứng dụng sẽ khởi động lại sau khi hoàn tất")
+                return True
+            else:
+                logger.error("Không thể tạo file exe mới")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Lỗi khi đóng gói ứng dụng thành file exe: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
     def restart_application(self):
         """Khởi động lại ứng dụng sau khi cập nhật."""
         try:
             logger.info("Đang khởi động lại ứng dụng...")
-            # Tạo lệnh để khởi động lại ứng dụng
-            python = sys.executable
-            main_script = os.path.join(self.app_path, "main.py")
             
-            # Khởi động một tiến trình mới
-            subprocess.Popen([python, main_script], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            
-            # Thoát tiến trình hiện tại
-            os._exit(0)
+            # Nếu đang chạy từ exe
+            if self.is_frozen:
+                # Không cần restart vì đã được xử lý trong build_new_exe
+                logger.info("Ứng dụng sẽ được khởi động lại sau khi thay thế file exe")
+                os._exit(0)
+            else:
+                # Nếu đang chạy từ mã nguồn Python
+                python = sys.executable
+                main_script = os.path.join(self.app_path, "main.py")
+                
+                # Khởi động một tiến trình mới
+                subprocess.Popen([python, main_script], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                
+                # Thoát tiến trình hiện tại
+                os._exit(0)
             
         except Exception as e:
             logger.error(f"Lỗi khi khởi động lại ứng dụng: {e}")
