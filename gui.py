@@ -105,6 +105,10 @@ class AutoOfficeGUI:
         save_button = ctk.CTkButton(control_frame, text="Lưu tệp", command=self.save_document)
         save_button.pack(side=tk.LEFT, padx=10)
         
+        # Thêm nút kiểm tra cập nhật
+        check_update_button = ctk.CTkButton(control_frame, text="Kiểm tra cập nhật", command=self.manual_check_update)
+        check_update_button.pack(side=tk.LEFT, padx=10)
+        
         # Khu vực hiển thị kết quả
         self.result_text = tk.Text(result_frame, height=15, wrap=tk.WORD)
         self.result_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -122,6 +126,13 @@ class AutoOfficeGUI:
         
         progress_bar = ctk.CTkProgressBar(status_frame, variable=self.progress_value)
         progress_bar.pack(side=tk.RIGHT, padx=10, fill=tk.X, expand=True)
+        
+        # Thêm label phiên bản
+        version_label = ctk.CTkLabel(
+            status_frame, 
+            text=f"Phiên bản: {self.updater.current_version if self.updater else '1.0.0'}"
+        )
+        version_label.pack(side=tk.RIGHT, padx=10)
     
     def browse_file(self):
         """Mở hộp thoại chọn tệp Word."""
@@ -265,14 +276,35 @@ class AutoOfficeGUI:
             return
             
         def update_task():
-            has_update, version = self.updater.check_for_updates()
-            
-            if has_update:
-                self.root.after(0, lambda: messagebox.showinfo(
-                    "Cập nhật mới", 
-                    f"Có phiên bản mới: {version}\nVui lòng cập nhật để có trải nghiệm tốt nhất."
-                ))
+            # Sử dụng phương thức mới từ updater
+            self.updater.update_with_confirmation(self.root)
         
         thread = threading.Thread(target=update_task)
+        thread.daemon = True
+        thread.start()
+        
+    def manual_check_update(self):
+        """Kiểm tra cập nhật theo yêu cầu người dùng."""
+        if not self.updater:
+            messagebox.showinfo("Thông báo", "Chức năng cập nhật không khả dụng.")
+            return
+            
+        self.status_text.set("Đang kiểm tra cập nhật...")
+        
+        def check_task():
+            has_update, version = self.updater.check_for_updates()
+            
+            if not has_update:
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Kiểm tra cập nhật", 
+                    "Bạn đang sử dụng phiên bản mới nhất.",
+                    parent=self.root
+                ))
+                self.root.after(0, lambda: self.status_text.set("Không có cập nhật mới."))
+            else:
+                # Nếu có cập nhật, thực hiện cập nhật với xác nhận
+                self.root.after(0, lambda: self.updater.update_with_confirmation(self.root))
+        
+        thread = threading.Thread(target=check_task)
         thread.daemon = True
         thread.start()
