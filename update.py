@@ -423,13 +423,13 @@ class AutoOfficeUpdater:
             return False
             
     def create_update_batch(self, extracted_dir=None):
-        """Tạo batch file để build và thay thế exe sau khi ứng dụng đóng."""
+        """Tạo script để build và thay thế exe sau khi ứng dụng đóng."""
         try:
-            logger.info("Đang tạo batch file để hoàn tất cập nhật...")
+            logger.info("Đang tạo script PowerShell để hoàn tất cập nhật...")
             
             # Đường dẫn đến file exe hiện tại
             if not self.is_frozen:
-                logger.info("Không phải chạy từ exe, bỏ qua tạo batch update")
+                logger.info("Không phải chạy từ exe, bỏ qua tạo script update")
                 return False
                 
             # Lấy thông tin cần thiết
@@ -439,120 +439,194 @@ class AutoOfficeUpdater:
             exe_dir = os.path.dirname(old_exe)
             app_dir = self.app_path
             
-            # Tạo batch file để hoàn tất cập nhật
-            batch_path = os.path.join(self.app_path, "finish_update.bat")
+            # Đường dẫn tuyệt đối cho PowerShell script
+            ps_script_path = os.path.join(self.app_path, "update_autooffice.ps1")
+            log_path = os.path.join(self.app_path, "update_log.txt")
             
-            with open(batch_path, 'w') as f:
-                f.write('@echo off\n')
-                f.write('echo ===== AUTO OFFICE UPDATE =====\n')
-                f.write('echo Dang hoan tat cap nhat AutoOffice...\n')
+            with open(ps_script_path, 'w', encoding='utf-8') as f:
+                # Thêm header và thiết lập basic
+                f.write('# AutoOffice Update Script\n')
+                f.write('$ErrorActionPreference = "Stop"\n')
+                f.write('$logFile = "' + log_path.replace('\\', '\\\\') + '"\n\n')
+                
+                # Hàm ghi log
+                f.write('function Write-Log($message) {\n')
+                f.write('    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"\n')
+                f.write('    "$timestamp - $message" | Out-File -FilePath $logFile -Append -Encoding utf8\n')
+                f.write('    Write-Host $message\n')
+                f.write('}\n\n')
+                
+                # Bắt đầu cập nhật
+                f.write('Clear-Host\n')
+                f.write('Write-Host "===== AUTO OFFICE UPDATE =====" -ForegroundColor Green\n')
+                f.write('Write-Log "Bắt đầu quy trình cập nhật AutoOffice"\n\n')
+                
+                # Chuyển đến thư mục ứng dụng
+                f.write('# Chuyển đến thư mục ứng dụng\n')
+                f.write('Set-Location -Path "' + app_dir.replace('\\', '\\\\') + '"\n')
+                f.write('Write-Log "Chuyển đến thư mục: $(Get-Location)"\n\n')
                 
                 # Đợi process hiện tại kết thúc
-                f.write(f'echo Dang doi ung dung dong (PID: {current_pid})...\n')
-                f.write(f'set /a wait_count=0\n')
-                f.write(':wait_loop\n')
-                f.write(f'tasklist /fi "PID eq {current_pid}" | find "{current_pid}" > nul\n')
-                f.write('if not errorlevel 1 (\n')
-                f.write('  echo Process dang chay, cho 1 giay...\n')
-                f.write('  timeout /t 1 /nobreak > nul\n')
-                f.write('  set /a wait_count+=1\n')
-                f.write('  if %wait_count% gtr 10 (\n')
-                f.write('    echo Ket thuc cuong buc process...\n')
-                f.write('    goto :force_close\n')
-                f.write('  )\n')
-                f.write('  goto wait_loop\n')
-                f.write(')\n')
-                f.write('goto :continue_update\n')
+                f.write('# Đợi process hiện tại kết thúc\n')
+                f.write('Write-Log "Đang đợi process có PID ' + str(current_pid) + ' kết thúc"\n')
+                f.write('$waitCount = 0\n')
+                f.write('Start-Sleep -Seconds 3\n')
+                f.write('$process = Get-Process -Id ' + str(current_pid) + ' -ErrorAction SilentlyContinue\n')
+                f.write('while ($process -ne $null -and $waitCount -lt 15) {\n')
+                f.write('    Write-Host "Process vẫn đang chạy, đợi 1 giây..."\n')
+                f.write('    Start-Sleep -Seconds 1\n')
+                f.write('    $waitCount++\n')
+                f.write('    $process = Get-Process -Id ' + str(current_pid) + ' -ErrorAction SilentlyContinue\n')
+                f.write('}\n\n')
                 
-                # Kết thúc cưỡng bức nếu cần
-                f.write(':force_close\n')
-                f.write(f'taskkill /F /PID {current_pid} /T > nul 2>&1\n')
-                f.write('timeout /t 2 /nobreak > nul\n')
+                # Kết thúc process nếu vẫn còn chạy
+                f.write('if ($process -ne $null) {\n')
+                f.write('    Write-Log "Process vẫn chạy sau khi đợi, thử kết thúc cưỡng bức"\n')
+                f.write('    try {\n')
+                f.write('        Stop-Process -Id ' + str(current_pid) + ' -Force -ErrorAction SilentlyContinue\n')
+                f.write('        Write-Log "Đã kết thúc process thành công"\n')
+                f.write('    } catch {\n')
+                f.write('        Write-Log "Không thể kết thúc process: $_"\n')
+                f.write('    }\n')
+                f.write('    Start-Sleep -Seconds 2\n')
+                f.write('} else {\n')
+                f.write('    Write-Log "Process đã kết thúc"\n')
+                f.write('}\n\n')
                 
-                # Tiếp tục cập nhật
-                f.write(':continue_update\n')
-                f.write('echo Process da dong, tiep tuc cap nhat...\n')
-                f.write('echo.\n')
+                # Kiểm tra Python và PyInstaller
+                f.write('# Kiểm tra Python và PyInstaller\n')
+                f.write('Write-Log "Kiểm tra Python và PyInstaller"\n')
+                f.write('try {\n')
+                f.write('    $pythonPath = (Get-Command python -ErrorAction Stop).Path\n')
+                f.write('    Write-Log "Tìm thấy Python: $pythonPath"\n')
+                f.write('} catch {\n')
+                f.write('    Write-Log "Lỗi: Python không được cài đặt hoặc không có trong PATH"\n')
+                f.write('    Write-Host "Lỗi: Python không được cài đặt. Vui lòng cài đặt Python và thử lại." -ForegroundColor Red\n')
+                f.write('    Read-Host "Nhấn Enter để thoát"\n')
+                f.write('    exit 1\n')
+                f.write('}\n\n')
                 
-                # Cài đặt PyInstaller nếu cần
-                f.write('echo Kiem tra va cai dat PyInstaller...\n')
-                f.write(f'"{sys.executable}" -m pip install pyinstaller --quiet\n')
-                f.write('if errorlevel 1 (\n')
-                f.write('  echo Khong the cai dat PyInstaller\n')
-                f.write('  pause\n')
-                f.write('  exit /b 1\n')
-                f.write(')\n')
+                # Cài đặt PyInstaller
+                f.write('Write-Log "Đang cài đặt PyInstaller"\n')
+                f.write('try {\n')
+                f.write('    & python -m pip install pyinstaller -q\n')
+                f.write('    if ($LASTEXITCODE -ne 0) { throw "Lỗi cài đặt PyInstaller" }\n')
+                f.write('    Write-Log "Đã cài đặt PyInstaller thành công"\n')
+                f.write('} catch {\n')
+                f.write('    Write-Log "Lỗi cài đặt PyInstaller: $_"\n')
+                f.write('    Write-Host "Lỗi cài đặt PyInstaller. Vui lòng thử lại." -ForegroundColor Red\n')
+                f.write('    Read-Host "Nhấn Enter để thoát"\n')
+                f.write('    exit 1\n')
+                f.write('}\n\n')
+                
+                # Chuẩn bị build exe
+                f.write('# Chuẩn bị build exe\n')
+                f.write('Write-Log "Chuẩn bị build exe mới"\n')
+                f.write('if (-not (Test-Path "dist")) { New-Item -ItemType Directory -Path "dist" | Out-Null }\n')
+                f.write('if (Test-Path "dist\\\\' + exe_name + '") {\n')
+                f.write('    Remove-Item "dist\\\\' + exe_name + '" -Force\n')
+                f.write('    Write-Log "Đã xóa file exe cũ trong thư mục dist"\n')
+                f.write('}\n\n')
                 
                 # Build exe mới
-                f.write('echo Dang tao file exe moi...\n')
-                f.write(f'cd /d "{app_dir}"\n')  # Đảm bảo thư mục làm việc đúng
+                icon_path = os.path.join(app_dir, "Logo.png").replace('\\', '\\\\')
+                main_script = os.path.join(app_dir, "main.py").replace('\\', '\\\\')
                 
-                # Tạo thư mục dist nếu chưa có
-                f.write('if not exist "dist" mkdir dist\n')
+                f.write('# Build exe mới\n')
+                f.write('Write-Log "Đang build exe mới"\n')
+                f.write('Write-Host "Quá trình này có thể mất vài phút..." -ForegroundColor Yellow\n')
+                f.write('try {\n')
+                f.write('    $buildOutput = & python -m PyInstaller --noconfirm --onefile --windowed ')
+                f.write(f'--name="{os.path.splitext(exe_name)[0]}" ')
+                f.write(f'--add-data="{icon_path};." "{main_script}" 2>&1\n')
+                f.write('    $buildOutput | Out-File -FilePath "build_output.log" -Encoding utf8\n')
+                f.write('    if ($LASTEXITCODE -ne 0) { throw "Lỗi build exe" }\n')
+                f.write('    Write-Log "Build exe thành công"\n')
+                f.write('} catch {\n')
+                f.write('    Write-Log "Lỗi khi build exe: $_"\n')
+                f.write('    Write-Log "Chi tiết lỗi build có thể xem trong file build_output.log"\n')
+                f.write('    Write-Host "Lỗi khi build exe. Xem chi tiết trong build_output.log" -ForegroundColor Red\n')
+                f.write('    Read-Host "Nhấn Enter để thoát"\n')
+                f.write('    exit 1\n')
+                f.write('}\n\n')
                 
-                # Xóa exe cũ trong thư mục dist nếu có
-                f.write(f'if exist "dist\\{exe_name}" del /f /q "dist\\{exe_name}"\n')
+                # Kiểm tra file exe mới
+                f.write('# Kiểm tra file exe mới\n')
+                f.write('if (-not (Test-Path "dist\\\\' + exe_name + '")) {\n')
+                f.write('    Write-Log "Không tìm thấy file exe mới sau khi build"\n')
+                f.write('    Write-Host "Lỗi: Không tìm thấy file exe mới sau khi build" -ForegroundColor Red\n')
+                f.write('    Read-Host "Nhấn Enter để thoát"\n')
+                f.write('    exit 1\n')
+                f.write(')\n\n')
                 
-                # Tạo lệnh build exe
-                icon_path = os.path.join(app_dir, "Logo.png")
-                main_script = os.path.join(app_dir, "main.py")
-                py_exe = sys.executable
-                
-                build_cmd = (f'"{py_exe}" -m PyInstaller --noconfirm --onefile --windowed '
-                          f'--name="{os.path.splitext(exe_name)[0]}" '
-                          f'--add-data="{icon_path};." "{main_script}"')
-                
-                f.write(f'{build_cmd}\n')
-                f.write('if errorlevel 1 (\n')
-                f.write('  echo Khong the tao file exe moi. Loi PyInstaller.\n')
-                f.write('  pause\n')
-                f.write('  exit /b 1\n')
-                f.write(')\n')
-                
-                # Kiểm tra xem file exe mới đã được tạo chưa
-                f.write(f'if not exist "dist\\{exe_name}" (\n')
-                f.write('  echo Khong tim thay file exe moi sau khi build.\n')
-                f.write('  pause\n')
-                f.write('  exit /b 1\n')
-                f.write(')\n')
+                # Đóng các tiến trình liên quan
+                f.write('# Kiểm tra và kết thúc các tiến trình liên quan\n')
+                f.write('Write-Log "Kiểm tra và đóng các tiến trình liên quan"\n')
+                f.write('$exeProcesses = Get-Process -Name "' + os.path.splitext(exe_name)[0] + '" -ErrorAction SilentlyContinue\n')
+                f.write('if ($exeProcesses) {\n')
+                f.write('    Write-Log "Đang đóng các tiến trình liên quan đến exe"\n')
+                f.write('    $exeProcesses | ForEach-Object { \n')
+                f.write('        try {\n')
+                f.write('            $_.Kill()\n')
+                f.write('            Write-Log "Đã kết thúc process $($_.Id)"\n')
+                f.write('        } catch {\n')
+                f.write('            Write-Log "Không thể kết thúc process $($_.Id): $_"\n')
+                f.write('        }\n')
+                f.write('    }\n')
+                f.write('    Start-Sleep -Seconds 2\n')
+                f.write('}\n\n')
                 
                 # Thay thế file exe cũ
-                f.write('echo Dang thay the file exe cu...\n')
-                f.write(f'copy /y "dist\\{exe_name}" "{old_exe}"\n')
-                f.write('if errorlevel 1 (\n')
-                f.write('  echo Khong the sao chep file exe moi.\n')
-                f.write('  echo Thu mo lai voi quyen quan tri...\n')
-                f.write('  goto :try_admin\n')
-                f.write(')\n')
-                f.write('goto :finish\n')
-                
-                # Thử với quyền admin
-                f.write(':try_admin\n')
-                f.write('echo Set UAC = CreateObject^("Shell.Application"^) > "%temp%\\elevate.vbs"\n')
-                f.write(f'echo UAC.ShellExecute "cmd.exe", "/c copy /y ""dist\\{exe_name}"" ""{old_exe}"" && echo Cap nhat thanh cong && pause", "", "runas", 1 >> "%temp%\\elevate.vbs"\n')
-                f.write('"%temp%\\elevate.vbs"\n')
-                f.write('del "%temp%\\elevate.vbs"\n')
-                f.write('exit /b 0\n')
+                old_exe_escaped = old_exe.replace('\\', '\\\\')
+                f.write('# Thay thế file exe cũ\n')
+                f.write('Write-Log "Đang thay thế file exe cũ"\n')
+                f.write('try {\n')
+                f.write('    Copy-Item -Path "dist\\\\' + exe_name + '" -Destination "' + old_exe_escaped + '" -Force\n')
+                f.write('    Write-Log "Đã thay thế file exe thành công"\n')
+                f.write('} catch {\n')
+                f.write('    Write-Log "Lỗi khi thay thế file exe: $_"\n')
+                f.write('    Write-Host "Lỗi: Không thể thay thế file exe cũ. Có thể cần quyền admin." -ForegroundColor Red\n')
+                f.write('    Write-Host "Đang thử lại với quyền admin..." -ForegroundColor Yellow\n')
+                f.write('    Start-Process powershell -ArgumentList "-Command Copy-Item -Path ""dist\\\\' + exe_name + '"" -Destination ""' + old_exe_escaped + '"" -Force" -Verb RunAs\n')
+                f.write('    Start-Sleep -Seconds 3\n')
+                f.write('}\n\n')
                 
                 # Hoàn thành và chạy exe mới
-                f.write(':finish\n')
-                f.write('echo Cap nhat hoan tat thanh cong!\n')
-                f.write(f'start "" "{old_exe}"\n')
-                f.write('echo Dang khoi dong lai ung dung...\n')
-                f.write('timeout /t 2 /nobreak > nul\n')
-                f.write('del "%~f0"\n')
+                f.write('# Hoàn thành và chạy exe mới\n')
+                f.write('Write-Log "Cập nhật hoàn tất"\n')
+                f.write('Write-Host "Cập nhật hoàn tất thành công!" -ForegroundColor Green\n')
+                f.write('Write-Host "Đang khởi động lại ứng dụng..." -ForegroundColor Cyan\n')
+                f.write('Start-Sleep -Seconds 1\n')
+                f.write('try {\n')
+                f.write('    Start-Process -FilePath "' + old_exe_escaped + '"\n')
+                f.write('    Write-Log "Đã khởi động lại ứng dụng"\n')
+                f.write('} catch {\n')
+                f.write('    Write-Log "Lỗi khi khởi động lại ứng dụng: $_"\n')
+                f.write('}\n')
+                f.write('Start-Sleep -Seconds 2\n')
+                f.write('Remove-Item -Path "build_output.log" -ErrorAction SilentlyContinue\n')
+                f.write('# End of script\n')
             
-            # Tạo shortcut để chạy batch file với quyền admin
-            vbs_path = os.path.join(self.app_path, "run_update.vbs")
-            with open(vbs_path, 'w') as f:
-                f.write('Set UAC = CreateObject("Shell.Application")\n')
-                f.write(f'UAC.ShellExecute "{batch_path}", "", "", "runas", 1\n')
+            # Tạo BAT file đơn giản để chạy PowerShell script với quyền admin (không dùng vbs)
+            admin_bat_path = os.path.join(self.app_path, "run_update.bat")
+            with open(admin_bat_path, 'w') as f:
+                f.write('@echo off\n')
+                f.write('cls\n')
+                f.write('echo Dang chuan bi cap nhat AutoOffice...\n')
+                f.write(f'echo Duong dan thu muc ung dung: {app_dir}\n')
+                ps_path = os.path.join(app_dir, "update_autooffice.ps1").replace('\\', '\\\\')
+                f.write(f'powershell -ExecutionPolicy Bypass -File "{ps_path}"\n')
+                f.write('if errorlevel 1 (\n')
+                f.write('    echo Loi khi chay PowerShell script. Vui long xem log de biet chi tiet.\n')
+                f.write('    pause\n')
+                f.write(')\n')
             
-            logger.info(f"Đã tạo batch file cập nhật: {batch_path}")
+            logger.info(f"Đã tạo PowerShell script cập nhật: {ps_script_path}")
+            logger.info(f"Đã tạo BAT file chạy script: {admin_bat_path}")
             return True
             
         except Exception as e:
-            logger.error(f"Lỗi khi tạo batch file cập nhật: {e}")
+            logger.error(f"Lỗi khi tạo script cập nhật: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
@@ -642,19 +716,20 @@ class AutoOfficeUpdater:
             progress_var.set(60)
             update_window.update()
         
-        # Nếu đang chạy từ file exe, tạo batch file để hoàn tất cập nhật
+        # Nếu đang chạy từ file exe, tạo PowerShell script để hoàn tất cập nhật
         if self.is_frozen:
             if update_label:
-                update_label.config(text="Đang chuẩn bị build file exe...")
+                update_label.config(text="Đang chuẩn bị cập nhật exe...")
                 progress_var.set(80)
                 update_window.update()
             
-            # Tạo batch file để hoàn tất cập nhật
-            if not self.create_update_batch(extracted_dir):
+            # Tạo batch file trực tiếp build và thay thế exe
+            update_batch_path = self._create_simple_update_batch()
+            if not update_batch_path:
                 if update_window:
                     update_window.destroy()
                 if parent_window:
-                    messagebox.showerror("Lỗi", "Không thể tạo quy trình build exe.", parent=parent_window)
+                    messagebox.showerror("Lỗi", "Không thể tạo quy trình cập nhật exe.", parent=parent_window)
                 return False
             
             # Cập nhật tiến trình
@@ -687,17 +762,46 @@ class AutoOfficeUpdater:
                     )
                     return False
             
-            # Chạy VBS để khởi động batch file với quyền admin và thoát
-            vbs_path = os.path.join(self.app_path, "run_update.vbs")
-            subprocess.Popen(['wscript.exe', vbs_path], 
-                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            
-            # Đợi 1 giây để batch file có thể chạy
-            time.sleep(1)
-            
-            # Thoát ứng dụng
-            os._exit(0)
-            
+            try:
+                # Chạy batch file với quyền admin bằng cách gọi runas
+                update_cmd_path = update_batch_path.replace("/", "\\")
+                logger.info(f"Đang chạy batch file cập nhật: {update_cmd_path}")
+                
+                # Tạo file VBS tạm thời để chạy với quyền admin
+                temp_vbs_path = os.path.join(self.app_path, "run_as_admin.vbs")
+                with open(temp_vbs_path, 'w') as f:
+                    # Script VBS đơn giản hơn, trực tiếp gọi batch file
+                    f.write('Set UAC = CreateObject("Shell.Application")\n')
+                    f.write(f'UAC.ShellExecute "{update_cmd_path}", "", "", "runas", 1\n')
+                
+                # Chạy file VBS
+                os.system(f'wscript.exe "{temp_vbs_path}"')
+                
+                # Hiển thị thông báo hướng dẫn
+                if parent_window:
+                    messagebox.showinfo(
+                        "Đang cập nhật",
+                        "Quá trình cập nhật đã bắt đầu.\n"
+                        "Vui lòng đợi một lát để hoàn tất quá trình cập nhật.\n"
+                        "Ứng dụng sẽ tự động đóng sau khi xác nhận.",
+                        parent=parent_window
+                    )
+                
+                # Đóng ứng dụng
+                logger.info("Đóng ứng dụng để hoàn tất cập nhật")
+                time.sleep(2)  # Đợi 2 giây để đảm bảo các thông báo được hiển thị
+                os._exit(0)
+                
+            except Exception as e:
+                logger.error(f"Lỗi khi chạy batch file cập nhật: {e}")
+                if parent_window:
+                    messagebox.showerror(
+                        "Lỗi cập nhật", 
+                        f"Không thể chạy batch file cập nhật: {e}\n"
+                        "Vui lòng thử lại hoặc cập nhật thủ công.",
+                        parent=parent_window
+                    )
+                return False
         else:
             # Nếu chạy từ Python, chỉ cần khởi động lại
             if update_window:
@@ -714,3 +818,149 @@ class AutoOfficeUpdater:
             self.restart_application()
         
         return True
+        
+    def _create_simple_update_batch(self):
+        """Tạo batch file đơn giản để build và thay thế exe."""
+        try:
+            if not self.is_frozen:
+                return False
+                
+            # Lấy thông tin cần thiết
+            exe_path = self.exe_path
+            exe_name = os.path.basename(exe_path)
+            app_dir = self.app_path
+                
+            # Tạo batch file đơn giản để build exe và thay thế
+            batch_path = os.path.join(app_dir, "update_exe.bat")
+            
+            with open(batch_path, 'w') as f:
+                f.write('@echo off\n')
+                f.write('title Auto Office Update\n')
+                f.write('color 0A\n')
+                f.write('cls\n')
+                f.write('echo ===== AUTO OFFICE UPDATE =====\n')
+                f.write('echo.\n')
+                
+                # Ghi thông tin chẩn đoán
+                f.write('echo Thong tin cap nhat:\n')
+                f.write(f'echo - Thu muc ung dung: {app_dir}\n')
+                f.write(f'echo - File exe goc: {exe_path}\n')
+                f.write(f'echo - Ten file exe: {exe_name}\n')
+                f.write('echo.\n')
+                
+                f.write('echo Dang cho ung dung dong...\n')
+                f.write(f'timeout /t 5 /nobreak\n')
+                
+                # Kiểm tra và đóng tiến trình nếu còn chạy
+                f.write(f'tasklist /fi "imagename eq {exe_name}" | find "{exe_name}" > nul\n')
+                f.write('if not errorlevel 1 (\n')
+                f.write(f'  echo {exe_name} van dang chay, se ket thuc tien trinh...\n')
+                f.write(f'  taskkill /f /im {exe_name} > nul\n')
+                f.write('  timeout /t 2 /nobreak > nul\n')
+                f.write(')\n\n')
+                
+                # Cài đặt PyInstaller
+                f.write('echo Dang cai dat PyInstaller...\n')
+                f.write('pip install pyinstaller > nul\n')
+                f.write('if errorlevel 1 (\n')
+                f.write('  echo Loi cai dat PyInstaller\n')
+                f.write('  pause\n')
+                f.write('  exit /b 1\n')
+                f.write(')\n\n')
+                
+                # Build exe mới
+                f.write('echo Dang build file exe moi...\n')
+                f.write(f'cd /d "{app_dir}"\n')
+                icon_path = os.path.join(app_dir, "Logo.png")
+                main_path = os.path.join(app_dir, "main.py")
+                f.write(f'pyinstaller --noconfirm --onefile --windowed --name="{os.path.splitext(exe_name)[0]}" --add-data="{icon_path};." "{main_path}"\n')
+                f.write('if errorlevel 1 (\n')
+                f.write('  echo Loi build file exe\n')
+                f.write('  pause\n')
+                f.write('  exit /b 1\n')
+                f.write(')\n\n')
+                
+                # Kiểm tra file exe mới
+                f.write(f'if not exist "dist\\{exe_name}" (\n')
+                f.write('  echo Khong tim thay file exe moi\n')
+                f.write('  pause\n')
+                f.write('  exit /b 1\n')
+                f.write(')\n\n')
+                
+                # Tạo bản sao lưu của file exe cũ
+                f.write('echo Tao ban sao luu cua file exe cu...\n')
+                f.write(f'if exist "{exe_path}.bak" del /f /q "{exe_path}.bak"\n')
+                f.write(f'copy /y "{exe_path}" "{exe_path}.bak"\n')
+                f.write('echo Da sao luu file exe cu.\n\n')
+                
+                # Thay thế file exe cũ - sử dụng nhiều phương pháp
+                f.write('echo Dang thay the file exe cu...\n')
+                
+                # Phương pháp 1: Thử copy trực tiếp
+                f.write('echo Phuong phap 1: Copy truc tiep\n')
+                f.write(f'copy /y "dist\\{exe_name}" "{exe_path}"\n')
+                f.write('if not errorlevel 1 (\n')
+                f.write('  echo Da thay the file exe thanh cong.\n')
+                f.write('  goto success\n')
+                f.write(')\n\n')
+                
+                # Phương pháp 2: Thử đổi tên file cũ và copy file mới
+                f.write('echo Phuong phap 2: Doi ten va copy\n')
+                f.write(f'ren "{exe_path}" "temp_{exe_name}"\n')
+                f.write(f'copy /y "dist\\{exe_name}" "{exe_path}"\n')
+                f.write('if not errorlevel 1 (\n')
+                f.write(f'  del /f /q "{os.path.dirname(exe_path)}\\temp_{exe_name}"\n')
+                f.write('  echo Da thay the file exe thanh cong.\n')
+                f.write('  goto success\n')
+                f.write(')\n')
+                f.write(f'ren "{os.path.dirname(exe_path)}\\temp_{exe_name}" "{exe_name}"\n\n')
+                
+                # Phương pháp 3: Sử dụng robocopy
+                f.write('echo Phuong phap 3: Su dung robocopy\n')
+                f.write(f'robocopy "dist" "{os.path.dirname(exe_path)}" {exe_name} /NFL /NDL /NJH /NJS /NC /NS /MT:4\n')
+                f.write('if %ERRORLEVEL% LEQ 7 (\n')
+                f.write('  echo Da thay the file exe thanh cong (robocopy).\n')
+                f.write('  goto success\n')
+                f.write(')\n\n')
+                
+                # Báo lỗi nếu không thể thay thế
+                f.write('echo Loi: Khong the thay the file exe.\n')
+                f.write('echo Co the can chay voi quyen quan tri.\n')
+                f.write('echo Thu tao shortcut va chay voi quyen admin...\n')
+                
+                # Tạo script thay thế với quyền admin
+                f.write('echo Set UAC = CreateObject^("Shell.Application"^) > "%temp%\\admin_copy.vbs"\n')
+                f.write(f'echo UAC.ShellExecute "cmd.exe", "/c copy /y ""dist\\{exe_name}"" ""{exe_path}"" & echo Thanh cong!", "", "runas", 1 >> "%temp%\\admin_copy.vbs"\n')
+                f.write('"%temp%\\admin_copy.vbs"\n')
+                f.write('timeout /t 5 /nobreak > nul\n')
+                
+                f.write(f'if not exist "{exe_path}" (\n')
+                f.write('  echo Loi: Khong the thay the file exe.\n')
+                f.write('  echo Phuc hoi tu ban sao luu...\n')
+                f.write(f'  copy /y "{exe_path}.bak" "{exe_path}"\n')
+                f.write('  pause\n')
+                f.write('  exit /b 1\n')
+                f.write(')\n\n')
+                
+                # Xác nhận thành công
+                f.write(':success\n')
+                f.write('cls\n')
+                f.write('echo ===== CAP NHAT THANH CONG =====\n')
+                f.write('echo.\n')
+                f.write('echo Da thay the file exe thanh cong.\n')
+                f.write(f'echo File exe moi: {exe_path}\n')
+                f.write('echo.\n')
+                f.write('echo Dang khoi dong lai ung dung...\n')
+                f.write('timeout /t 3 > nul\n')
+                f.write(f'start "" "{exe_path}"\n')
+                f.write('echo Hoan tat!\n')
+                f.write('timeout /t 2 > nul\n')
+                f.write('del "%~f0"\n')
+                f.write('exit\n')
+            
+            logger.info(f"Đã tạo batch file cập nhật: {batch_path}")
+            return batch_path
+            
+        except Exception as e:
+            logger.error(f"Lỗi khi tạo batch file cập nhật: {e}")
+            return False
